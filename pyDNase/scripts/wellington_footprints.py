@@ -143,7 +143,7 @@ regions = pyDNase.GenomicIntervalSet(args.regions)
 reads = pyDNase.BAMHandler(args.reads,caching=False)
 
 #Create a directory for p-values and WIG output. This /should/ be OS independent
-os.makedirs(os.path.join(args.outputdir,"p value cutoffs"))
+os.makedirs(os.path.join(args.outputdir,"p_value_cutoffs"))
 wigout = open(os.path.relpath(args.outputdir) + "/" + args.output_prefix + ".WellingtonFootprints.wig","w")
 fdrout = open(os.path.relpath(args.outputdir) + "/" + args.output_prefix + ".WellingtonFootprints.FDR.{0}.bed".format(args.FDR_cutoff),"w")
 
@@ -187,12 +187,13 @@ def footprint_regions(intervals, reads, args):
 def map_f(a):
     return footprint_regions(a, reads, args)
 
+nchunks = 100
 pool = mp.Pool(args.threads)
 puts("Calculating footprints ({} threads) ...".format(args.threads))
-result = pool.map(map_f, np.array_split(np.array(orderedbychr), 32))
+it = pool.imap_unordered(map_f, np.array_split(np.array(orderedbychr), nchunks))
+p = progress.bar(it, expected_size=nchunks)
 
-puts("Writing output")
-for chunk in result:
+for chunk in p:
     for fp, fdr_fps in chunk:
         #Write fpscores to WIG
         print >> wigout, "fixedStep\tchrom=" + str(fp.interval.chromosome) + "\t start="+ str(fp.interval.startbp) +"\tstep=1"
