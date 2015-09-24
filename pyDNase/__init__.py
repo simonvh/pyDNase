@@ -305,8 +305,9 @@ class GenomicIntervalSet(object):
         """
         BEDSplit = BEDString.split()
 
-        #Sanity check
-        if len(BEDSplit) not in [3,4,6]:
+        # Sanity check
+        # We don't care about anything else but chrom:start-end
+        if len(BEDSplit) < 3:
             self.__malformedBEDline(BEDString)
 
         #Default if only Chrom Start End is detected
