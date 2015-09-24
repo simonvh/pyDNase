@@ -15,28 +15,75 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import argparse, os, math
+import argparse
+import os
+import math
+import multiprocessing as mp
+import sys
+
 from clint.textui import progress,puts
 import numpy as np
+
 import pyDNase
 from pyDNase import footprinting
 
 __version__ = "0.1.1"
 
-parser = argparse.ArgumentParser(description='Footprint the DHSs in a DNase-seq experiment using the Wellington Algorithm.')
-parser.add_argument("-b","--bonferroni",action="store_true", help="Performs a bonferroni correction (default: False)",default=False)
-parser.add_argument("-sh", "--shoulder-sizes", help="Range of shoulder sizes to try in format \"from,to,step\" (default: 35,36,1)",default="35,36,1",type=str)
-parser.add_argument("-fp", "--footprint-sizes", help="Range of footprint sizes to try in format \"from,to,step\" (default: 11,26,2)",default="11,26,2",type=str)
-parser.add_argument("-d", "--one-dimension",action="store_true", help="Use Wellington 1D instead of Wellington (default: False)",default=False)
-parser.add_argument("-fdr","--FDR_cutoff", help="Write footprints using the FDR selection method at a specific FDR (default: 0.01)",default=0.01,type=float)
-parser.add_argument("-fdriter", "--FDR-iterations", help="How many randomisations to use when performing FDR calculations (default: 100)",default=100,type=int)
-parser.add_argument("-fdrlimit", "--FDR-limit", help="Minimum p-value to be considered significant for FDR calculation (default: -20)",default=-20,type=int)
-parser.add_argument("-pv","--pv_cutoffs", help="Select footprints using a range of pvalue cutoffs (default: -10,-20,-30,-40,-50,-75,-100,-300,-500,-700",default="-10,-20,-30,-40,-50,-75,-100,-300,-500,-700",type=str) #map(int,"1,2,3".split(","))
-parser.add_argument("-dm","--dont-merge-footprints",action="store_true", help="Disables merging of overlapping footprints (Default: False)",default=False)
-parser.add_argument("-o","--output_prefix", help="The prefix for results files (default: <reads.regions>)",default="",type=str)
-parser.add_argument("regions", help="BED file of the regions you want to footprint")
-parser.add_argument("reads", help="The BAM file containing the DNase-seq reads")
-parser.add_argument("outputdir", help="A writeable directory to write the results to")
+parser = argparse.ArgumentParser(
+        description='Footprint the DHSs in a DNase-seq experiment using the '
+                    'Wellington Algorithm.')
+# Main arguments
+parser.add_argument("regions", 
+        help="BED file of the regions you want to footprint")
+parser.add_argument("reads", 
+        help="The BAM file containing the DNase-seq reads")
+parser.add_argument("outputdir", 
+        help="A writeable directory to write the results to")
+
+# Optional arguments
+parser.add_argument("-t", "--threads",
+        help="Number of threads (default: 2)",
+        type=int,
+        default=2)
+parser.add_argument("-b", "--bonferroni",
+        action="store_true", 
+        help="Performs a bonferroni correction (default: False)",
+        default=False)
+parser.add_argument("-sh", "--shoulder-sizes", 
+        help="Range of shoulder sizes to try in format \"from,to,step\" (default: 35,36,1)",
+        default="35,36,1",
+        type=str)
+parser.add_argument("-fp", "--footprint-sizes", 
+        help="Range of footprint sizes to try in format \"from,to,step\" (default: 11,26,2)",
+        default="11,26,2",
+        type=str)
+parser.add_argument("-d", "--one-dimension",
+        action="store_true", 
+        help="Use Wellington 1D instead of Wellington (default: False)",
+        default=False)
+parser.add_argument("-fdr","--FDR_cutoff", 
+        help="Write footprints using the FDR selection method at a specific FDR (default: 0.01)",
+        default=0.01,
+        type=float)
+parser.add_argument("-fdriter", "--FDR-iterations", 
+        help="How many randomisations to use when performing FDR calculations (default: 100)",
+        default=100,
+        type=int)
+parser.add_argument("-fdrlimit", "--FDR-limit", 
+        help="Minimum p-value to be considered significant for FDR calculation (default: -20)",
+        default=-20,
+        type=int)
+parser.add_argument("-pv","--pv_cutoffs", 
+        help="Select footprints using a range of pvalue cutoffs (default: -10,-20,-30,-40,-50,-75,-100,-300,-500,-700",
+        default="-10,-20,-30,-40,-50,-75,-100,-300,-500,-700",
+        type=str) #map(int,"1,2,3".split(","))
+parser.add_argument("-dm","--dont-merge-footprints",
+        action="store_true", 
+        help="Disables merging of overlapping footprints (Default: False)",
+        default=False)
+parser.add_argument("-o","--output_prefix", 
+        help="The prefix for results files (default: <reads.regions>)",
+        default="",type=str)
 args = parser.parse_args()
 
 def percentile(N, percent):
@@ -105,30 +152,63 @@ print >> wigout, "track type=wiggle_0"
 
 #Iterate in chromosome, basepair order
 orderedbychr = [item for sublist in sorted(regions.intervals.values()) for item in sorted(sublist, key=lambda peak: peak.startbp)]
-puts("Calculating footprints...")
-for each in progress.bar(orderedbychr):
+
+
+def footprint_regions(intervals, reads, args):
     #Calculate footprint scores (1D or 2D)
     #TODO: put args here.
-    if args.one_dimension:
-        fp = footprinting.wellington1D(each, reads, shoulder_sizes = args.shoulder_sizes ,footprint_sizes = args.footprint_sizes, bonferroni = args.bonferroni)
-    else:
-        fp = footprinting.wellington(each, reads, shoulder_sizes = args.shoulder_sizes ,footprint_sizes = args.footprint_sizes, bonferroni = args.bonferroni)
+    fps = []
+    for each in intervals:
+        #sys.stderr.write("{}\n".format(each))
+        if args.one_dimension:
+            fp = footprinting.wellington1D(each, reads, shoulder_sizes = args.shoulder_sizes ,footprint_sizes = args.footprint_sizes, bonferroni = args.bonferroni)
+        else:
+            fp = footprinting.wellington(each, reads, shoulder_sizes = args.shoulder_sizes ,footprint_sizes = args.footprint_sizes, bonferroni = args.bonferroni)
+        
+        #FDR footprints
+        fdr = percentile(
+                np.concatenate(
+                    [fp.calculate(
+                        reads,FDR=True, 
+                        shoulder_sizes = args.shoulder_sizes,
+                        footprint_sizes = args.footprint_sizes, 
+                        bonferroni = args.bonferroni)[0] for i in range(
+                            args.FDR_iterations)]).tolist(),args.FDR_cutoff)
+        fdr_fps = []
+        if fdr < args.FDR_limit:
+            for footprint in fp.footprints(withCutoff=fdr,merge=not args.dont_merge_footprints):
+                fdr_fps.append(footprint)
 
-    #Write fpscores to WIG
-    print >> wigout, "fixedStep\tchrom=" + str(fp.interval.chromosome) + "\t start="+ str(fp.interval.startbp) +"\tstep=1"
-    for i in fp.scores:
-        print >> wigout, i
+        fps.append([fp, fdr_fps])
+        #sys.stderr.write("{}\n".format(fp))
+    
+    return fps
 
-    #FDR footprints
-    fdr = percentile(np.concatenate([fp.calculate(reads,FDR=True, shoulder_sizes = args.shoulder_sizes ,footprint_sizes = args.footprint_sizes, bonferroni = args.bonferroni)[0] for i in range(args.FDR_iterations)]).tolist(),args.FDR_cutoff)
-    if fdr < args.FDR_limit:
-        for footprint in fp.footprints(withCutoff=fdr,merge=not args.dont_merge_footprints):
+def map_f(a):
+    return footprint_regions(a, reads, args)
+
+pool = mp.Pool(args.threads)
+puts("Calculating footprints ({} threads) ...".format(args.threads))
+result = pool.map(map_f, np.array_split(np.array(orderedbychr), 32))
+
+puts("Writing output")
+for chunk in result:
+    for fp, fdr_fps in chunk:
+        #Write fpscores to WIG
+        print >> wigout, "fixedStep\tchrom=" + str(fp.interval.chromosome) + "\t start="+ str(fp.interval.startbp) +"\tstep=1"
+        for i in fp.scores:
+            print >> wigout, i
+
+        #FDR footprints
+        for footprint in fdr_fps:
             print >> fdrout, footprint
 
-    #p-value cutoff footprints
-    for fpscore in args.pv_cutoffs:
-        ofile = open(os.path.relpath(os.path.join(args.outputdir,"p value cutoffs")) + "/" + args.output_prefix + ".WellingtonFootprints.{0}.bed".format(fpscore),"a")
-        for footprint in fp.footprints(withCutoff=fpscore):
-            print >> ofile, footprint
-        ofile.close()
+        #p-value cutoff footprints
+        for fpscore in args.pv_cutoffs:
+            ofile = open(os.path.relpath(
+                os.path.join(args.outputdir,
+                    "p_value_cutoffs")) + "/" + args.output_prefix + ".WellingtonFootprints.{0}.bed".format(fpscore),"a")
+            for footprint in fp.footprints(withCutoff=fpscore):
+                print >> ofile, footprint
+            ofile.close()
 wigout.close()
